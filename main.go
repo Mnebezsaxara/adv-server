@@ -464,8 +464,8 @@ func handleGetBookings(w http.ResponseWriter, r *http.Request) {
 func sendEmailWithAttachment(to, subject, body, fileContent, fileName string) error {
 	smtpHost := "smtp.mail.ru"
 	smtpPort := "465"
-	username := "ploc91@mail.ru"
-	password := "t8W4VtwhnifanyLeSReD"
+	username := "m_akai@mail.ru"
+	password := "m6xNDmxDd4qy33ds5uEw"
 	from := username
 
 	// Boundary for separating email parts
