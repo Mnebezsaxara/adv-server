@@ -319,7 +319,7 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 		user.Active = false // User starts as inactive
 
 		// Create confirmation link
-		confirmationLink := fmt.Sprintf("http://localhost:8080/confirm?token=%s", confirmationToken)
+		confirmationLink := fmt.Sprintf("https://adv-front.onrender.com/confirm?token=%s", confirmationToken)
 
 		// Send confirmation email
 		emailBody := fmt.Sprintf("Please confirm your email by clicking this link: %s", confirmationLink)
@@ -625,7 +625,7 @@ func handleConfirmEmail(w http.ResponseWriter, r *http.Request) {
 	db.Save(&user)
 
 	// Redirect to login page with success message
-	http.Redirect(w, r, "http://localhost:5500/assignment1/front/form.html?confirmed=true", http.StatusTemporaryRedirect)
+	http.Redirect(w, r, "https://adv-front.onrender.com/form.html?confirmed=true", http.StatusTemporaryRedirect)
 }
 
 // Add new handler for profile updates
