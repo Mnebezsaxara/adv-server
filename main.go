@@ -14,10 +14,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/time/rate"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -67,18 +69,46 @@ type Booking struct {
 var (
 	db        *gorm.DB
 	logger    = logrus.New()
-	limiter   = rate.NewLimiter(2, 5) // 2 requests per second with a burst of 5
+	authLimiter    = rate.NewLimiter(1, 3)    // 1 request per second, burst of 3
+	bookingLimiter = rate.NewLimiter(5, 10)   // 5 requests per second, burst of 10
+	emailLimiter   = rate.NewLimiter(0.2, 1)  // 1 request per 5 seconds
 	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
 )
 
-func initDB() {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		dsn = "host=localhost user=postgres password=LUFFYtaroo111&&& dbname=SportLife port=5432 sslmode=disable"
-	}
+// Add configuration struct
+type Config struct {
+	DatabaseURL      string
+	SMTPHost        string
+	SMTPPort        string
+	SMTPUsername    string
+	SMTPPassword    string
+	JWTSecret       string
+	ServerPort      string
+}
 
+// Load configuration from environment
+func loadConfig() *Config {
+	return &Config{
+		DatabaseURL:   getEnvOrDefault("DATABASE_URL", "host=localhost user=postgres password=your_password dbname=SportLife port=5432 sslmode=disable"),
+		SMTPHost:     getEnvOrDefault("SMTP_HOST", "smtp.mail.ru"),
+		SMTPPort:     getEnvOrDefault("SMTP_PORT", "465"),
+		SMTPUsername: getEnvOrDefault("SMTP_USERNAME", ""),
+		SMTPPassword: getEnvOrDefault("SMTP_PASSWORD", ""),
+		JWTSecret:    getEnvOrDefault("JWT_SECRET", "your-secret-key"),
+		ServerPort:   getEnvOrDefault("PORT", "8080"),
+	}
+}
+
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func initDB(config *Config) {
 	var err error
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err = gorm.Open(postgres.Open(config.DatabaseURL), &gorm.Config{})
 	if err != nil {
 		logger.WithField("error", err).Fatal("Не удалось подключиться к базе данных")
 	}
@@ -101,18 +131,33 @@ func enableCORS(next http.Handler) http.Handler {
 	})
 }
 
-func rateLimited(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !limiter.Allow() {
-			logger.WithFields(logrus.Fields{
-				"action":      "rate_limit",
-				"client_ip":   r.RemoteAddr,
-				"status_code": http.StatusTooManyRequests,
-			}).Warn("Rate limit exceeded")
-			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
-			return
+// Define custom type for map keys
+type clientIP string
+
+// Update rateLimitedByKey to use the custom type
+func rateLimitedByKey(limiter *rate.Limiter) func(http.HandlerFunc) http.HandlerFunc {
+	limiters := make(map[clientIP]*rate.Limiter)
+	mu := &sync.RWMutex{}
+
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			key := clientIP(r.RemoteAddr)
+			mu.Lock()
+			if _, exists := limiters[key]; !exists {
+				limiters[key] = rate.NewLimiter(limiter.Limit(), limiter.Burst())
+			}
+			mu.Unlock()
+
+			if !limiters[key].Allow() {
+				logger.WithFields(logrus.Fields{
+					"action":    "rate_limit",
+					"client_ip": string(key),
+				}).Warn("Rate limit exceeded")
+				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+			next(w, r)
 		}
-		next(w, r)
 	}
 }
 
@@ -167,7 +212,6 @@ func getBookings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Ошибка сериализации JSON", http.StatusInternalServerError)
 	}
 }
-
 
 // Add JWT claims struct
 type Claims struct {
@@ -239,7 +283,11 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if user.Password != payload.Password {
+		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(payload.Password)); err != nil {
+			logger.WithFields(logrus.Fields{
+				"email": payload.Email,
+				"error": err,
+			}).Warn("Login attempt failed: incorrect password")
 			w.WriteHeader(http.StatusUnauthorized)
 			json.NewEncoder(w).Encode(ResponsePayload{
 				Status:  "fail",
@@ -910,19 +958,19 @@ func handleDeleteBooking(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	initDB()
+	config := loadConfig()
+	initDB(config)
 	configureLogger()
 	
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth", handleAuth)
-	// mux.HandleFunc("/auth", rateLimited(handleAuth))
-	// mux.HandleFunc("/bookings", rateLimited(handleBookings))
-	// mux.HandleFunc("/admin/email", rateLimited(handleSendEmail))
-	// Protect these endpoints with JWT middleware
-	mux.HandleFunc("/bookings", authMiddleware(handleBookings))
+	
+	// Add getBookings to the routes
+	mux.HandleFunc("/bookings/list", rateLimitedByKey(bookingLimiter)(authMiddleware(getBookings)))
+	mux.HandleFunc("/auth", rateLimitedByKey(authLimiter)(handleAuth))
+	mux.HandleFunc("/bookings", rateLimitedByKey(bookingLimiter)(authMiddleware(handleBookings)))
+	mux.HandleFunc("/admin/email", rateLimitedByKey(emailLimiter)(authMiddleware(handleSendEmail)))
 	mux.HandleFunc("/admin/users", authMiddleware(handleGetUsers))
 	mux.HandleFunc("/admin/bookings", authMiddleware(handleGetBookings))
-	mux.HandleFunc("/admin/email", authMiddleware(handleSendEmail))
 	mux.HandleFunc("/confirm", handleConfirmEmail)
 	mux.HandleFunc("/profile/update", authMiddleware(handleUpdateProfile))
 	mux.HandleFunc("/profile", authMiddleware(handleGetProfile))
@@ -938,8 +986,18 @@ func main() {
 	}))
 	mux.HandleFunc("/admin/bookings/", authMiddleware(handleDeleteBooking))
 
-	fmt.Println("Server started on port 8080...")
-	if err := http.ListenAndServe(":8080", enableCORS(mux)); err != nil {
-		log.Fatal("Failed to start server:", err)
+	serverAddr := ":" + config.ServerPort
+	logger.Infof("Server started on port %s...", config.ServerPort)
+	
+	server := &http.Server{
+		Addr:         serverAddr,
+		Handler:      enableCORS(mux),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil {
+		logger.Fatal("Failed to start server:", err)
 	}
 }
