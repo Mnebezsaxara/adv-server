@@ -6,7 +6,10 @@ require github.com/sirupsen/logrus v1.9.3
 
 require (
 	github.com/blang/semver v3.5.1+incompatible // indirect
+	github.com/google/go-cmp v0.5.5 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect
+	github.com/stretchr/testify v1.9.0 // indirect
+	golang.org/x/net v0.25.0 // indirect
 )
 
 require (
@@ -18,10 +21,10 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/tebeka/selenium v0.9.9
-	golang.org/x/crypto v0.17.0
+	golang.org/x/crypto v0.23.0
 	golang.org/x/sync v0.1.0 // indirect
 	golang.org/x/sys v0.22.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/text v0.15.0 // indirect
 	golang.org/x/time v0.9.0
 	gorm.io/driver/postgres v1.5.11
 	gorm.io/driver/sqlite v1.5.7
